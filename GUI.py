@@ -1,5 +1,5 @@
 
-from PyQt5.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication
 try:
     from eve_smlm.GUI_main import MyGUI
 except ImportError:
@@ -7,7 +7,7 @@ except ImportError:
 
 import sys,argparse,colorsys
 import multiprocessing
-from PyQt5.QtGui import QIcon
+from PyQt6.QtGui import QIcon
 import os
 
 multiprocessing.freeze_support()
@@ -60,7 +60,7 @@ def get_stylesheet():
         f"QTabBar::tab:selected {{ background-color: {accent_color_darker}; color: {text_color}; border-top: {border_width} solid {accent_color}; }}"
         f"QTabBar::tab:hover {{ background-color: {accent_color}; color: {text_color}; }}"
         f"QGroupBox {{ border: {border_width} solid {accent_color}; border-radius: {border_radius}; margin-top: {margin_between_groupbox_and_entry}; }}"
-        f"QGroupBox::title {{ subcontrol-origin: margin; left: {margin_small}; padding: 0 {padding_medium}; background-color: {accent_color}; color: {text_color}; border: {border_width} solid {accent_color}; border-radius: {border_radius}; }}"
+        f"QGroupBox::title {{ subcontrol-origin: margin; left: {margin_small}; padding: 0 {padding_medium}; background-color: {accent_color}; color: {text_color}; border: {border_width} solid {accent_color}; }}"
         
     )
 
@@ -69,8 +69,8 @@ def get_stylesheet():
 def main():
     import gc
     gc.enable()
-    from PyQt5.QtCore import Qt
-    QApplication.setAttribute(Qt.AA_ShareOpenGLContexts)
+    from PyQt6.QtCore import Qt
+    QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
     multiprocessing.freeze_support()
     app = QApplication(sys.argv)
     
@@ -96,7 +96,7 @@ def main():
         
     gui.setStyleSheet(get_stylesheet())
     gui.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())
 
 if __name__ == "__main__":
     main()
