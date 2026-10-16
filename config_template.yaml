@@ -1,0 +1,108 @@
+# EVE headless run configuration.
+#
+# Run `python eve_run.py --list-config` to print every available method for
+# each stage below, together with its required and optional parameters. That
+# listing is generated from the plugin code itself, so it is always correct,
+# even for methods added after this template was written.
+#
+# A parameter listed as "required" here must be given, or the script stops
+# with an error before anything runs. "Optional" parameters fall back to the
+# plugin's own default if omitted.
+
+# ----------------------------------------------------------------------------
+# Input event data
+# ----------------------------------------------------------------------------
+input:
+  file: eve_test/input/Nanoruler_Small.hdf5   # .hdf5 or .npy
+  start_time_ms: 0
+  end_time_ms: 1800000        # 30 minutes; omit end_time_ms to use the whole file
+
+# ----------------------------------------------------------------------------
+# Global settings
+# ----------------------------------------------------------------------------
+# Only the settings EVE's routines actually read. These replace the GUI's
+# exported settings.json: all of them are required, nothing here is GUI-only.
+global_settings:
+  PixelSize_nm: 80
+  MinFindingBoundingBoxXY: 3
+  MinFindingBoundingBoxT: 10
+  MaxFindingBoundingBoxXY: 20
+  MaxFindingBoundingBoxT: 1000
+  Multithread: true
+  UseCUDA: false
+
+# ----------------------------------------------------------------------------
+# Candidate Finding - one method. See: --list-config
+# ----------------------------------------------------------------------------
+finding:
+  method: EigenFeatureAnalysis.eigenFeature_analysis
+  save_candidates: false   # true writes finding/candidates.pickle (can be large)
+  parameters:
+    search_n_neighbours: 30
+    max_eigenval_cutoff: 13
+    linearity_cutoff: 0.7
+    ratio_ms_to_px: 10
+    DBSCAN_eps: 3
+    DBSCAN_n_neighbours: 12
+
+  # Other finding methods (uncomment ONE 'method' line and fill its parameters;
+  # see --list-config for the exact parameter names of each):
+  # method: DBSCAN.DBSCAN_onlyHighDensity
+  # method: FrameBasedFinding.FrameBased_finding
+
+# ----------------------------------------------------------------------------
+# Candidate Fitting - one method. See: --list-config
+# ----------------------------------------------------------------------------
+fitting:
+  method: GaussianFitting.LogGaussian2D
+  parameters:
+    expected_width: 150.0
+    fitting_tolerance: 1.0
+    dist_kwarg: Hist2d_xy
+    time_kwarg: LognormCDFFirstEvents_weighted
+
+  # Other fitting methods:
+  # method: GaussianFitting.Gaussian2D
+  # method: PhasorFitting.PhasorFitting
+  # method: Radial_Symmetry.RadialSym2D
+
+# ----------------------------------------------------------------------------
+# Post-processing - an ORDERED LIST of methods. Each step receives the
+# previous step's localizations; the first step receives Fitting's output.
+# Every step's results are saved under post_processing/<method name>/.
+# ----------------------------------------------------------------------------
+post_processing:
+  - method: DriftCorr_DME.DriftCorr_RCC
+    parameters:
+      frame_time_for_dme: 100
+      nr_time_bins: 10
+      zoom_level: 2
+      visualisation: true
+      ConvHist: true   # required on Mac/Linux: avoids the Windows-only native library (see DriftCorr_DME.py:56)
+
+  # Alternative (also cross-platform, a different drift-correction algorithm -
+  # adaptive intersection maximization rather than cross-correlation):
+  # - method: DriftCorr_AIM.DriftCorr_AIM
+  #   parameters:
+  #     number_bins: 2000
+  #     visualisation: true
+
+  # Add more steps here, in the order they should run, e.g.:
+  # - method: Filter.Regular_filter
+  #   parameters:
+  #     ...
+
+# ----------------------------------------------------------------------------
+# Visualisation - one method. See: --list-config
+# ----------------------------------------------------------------------------
+visualisation:
+  method: Histogram_Convolution.Histogram_convolution
+  parameters:
+    PxSize: 5
+    Convolution_kernel: 50
+
+# ----------------------------------------------------------------------------
+# Output
+# ----------------------------------------------------------------------------
+output:
+  base_dir: output   # each run creates base_dir/<timestamp>/

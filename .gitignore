@@ -13,3 +13,5 @@ build\*
 /PyPI/v011
 /PyPI
 /dist
+/output
+/.vibe-wise
