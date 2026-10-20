@@ -16,3 +16,4 @@ build\*
 /output
 /.vibe-wise
 .DS_Store
+/params.yaml

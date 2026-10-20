@@ -19,11 +19,9 @@ import subprocess
 import sys
 import time
 
-# Force a non-interactive matplotlib backend *before* anything (including the
-# EVE routines below) can import pyplot. Some PostProcessing routines call
-# plt.show(), which would otherwise open a window and block the script.
+# The non-interactive "Agg" backend is selected in main(), not here, so that
+# eve_cli.py can import the helpers in this file and still open plot windows.
 import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 import imageio.v2 as imageio
@@ -37,6 +35,7 @@ from CandidateFinding import *
 from CandidateFitting import *
 from PostProcessing import *
 from Visualisation import *
+from CandidatePreview import *  # not used by this script; lets eve_cli.py resolve preview methods via get_metadata
 from Utils import utils
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -418,6 +417,11 @@ def run(config_path):
 
 
 def main():
+    # Force a non-interactive matplotlib backend before any figure is created.
+    # Some PostProcessing routines call plt.show(), which would otherwise open
+    # a window and block the script.
+    matplotlib.use("Agg")
+
     parser = argparse.ArgumentParser(
         description="Run the EVE pipeline from the terminal, driven by a YAML config."
     )
