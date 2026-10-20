@@ -13,14 +13,20 @@ config_template.yaml, so the file you tune here can also be run in one go with
 every command, so both ways stay in sync. Values stay in the file between
 sessions, so the last values you used are the ones the next run starts from.
 """
+import argparse
 import cmd
+import contextlib
 import difflib
+import functools
 import inspect
+import logging
 import os
 import datetime
 import pickle
 import re
 import shutil
+import sys
+import threading
 import time
 
 import imageio.v2 as imageio
@@ -46,7 +52,7 @@ from eve_run import (
 )
 from EventDistributions import eventDistributions
 from TemporalFitting import timeFitting
-from Utils import utils
+from Utils import utils, utilsHelper
 
 PARAMS_PATH = os.path.join(REPO_ROOT, "params.yaml")
 TEMPLATE_PATH = os.path.join(REPO_ROOT, "config_template.yaml")
@@ -157,6 +163,12 @@ def parse_value(text, spec):
     return text
 
 
+def default_text(spec):
+    """A parameter's plugin default as text; an empty one is shown as '' so it isn't invisible."""
+    default = spec.get("default")
+    return "''" if default == "" else str(default)
+
+
 def n_valid(localizations):
     """Number of real localizations. Fitting keeps a row for every candidate,
     with NaN coordinates where the fit was discarded, so len() over-counts."""
@@ -212,17 +224,306 @@ def stage_settings(params, stage):
 
 
 # ---------------------------------------------------------------------------
+# Appearance: colours, symbols, startup mascot
+# ---------------------------------------------------------------------------
+
+# Colours are plain ANSI escape codes, so no extra dependency is needed. Only
+# 256-colour codes plus bold/underline are used, and never white or black text,
+# so the output reads on light and dark terminals alike. COLOR and UNICODE stay
+# False (plain text) until setup_style() has checked what the terminal can show.
+COLOR = False
+UNICODE = False
+TRUECOLOR = False  # 24-bit colour (used for the mascot only)
+try:
+    import readline  # noqa: F401  (not available on Windows)
+    HAS_READLINE = True
+except ImportError:
+    HAS_READLINE = False
+
+RESET = "\033[0m"
+STYLES = {
+    "green": "38;5;34", "yellow": "38;5;178", "cyan": "38;5;37", "red": "38;5;160",
+    "grey": "38;5;244", "bold": "1", "underline": "4",
+}
+# (nice symbol, plain-text replacement for consoles that can't draw it)
+SYMBOLS = {"done": ("✓", "[x]"), "stale": ("●", "[~]"), "todo": ("○", "[ ]"), "arrow": ("→", "->")}
+
+# Eve (Eve.png) as a 14x12 grid of artwork pixels, each one half an artwork cell
+# (so the eyes keep their half-cell detail). Measured from the PNG; '.' is transparent.
+MASCOT_PALETTE = {
+    'a': (68, 1, 84), 'b': (35, 136, 142), 'c': (110, 206, 88), 'd': (105, 209, 47),
+    'e': (253, 231, 13), 'f': (213, 226, 26), 'g': (248, 230, 33), 'h': (184, 222, 41),
+    'i': (64, 69, 136), 'j': (30, 148, 132), 'k': (255, 255, 255), 'l': (253, 231, 37),
+    'm': (119, 209, 83), 'n': (0, 0, 0), 'o': (112, 207, 87), 'p': (200, 224, 32),
+    'q': (241, 229, 29), 'r': (234, 229, 26), 's': (30, 157, 137), 't': (44, 177, 126),
+    'u': (31, 152, 139), 'v': (147, 215, 65),
+}
+MASCOT_ROWS = [
+    ".......aaaaa..",
+    "......abbcca..",
+    "..aaaaabbccaaa",
+    "..addeeffgghha",
+    "aaaddeeffgghha",
+    "aiijjkkllkkmma",
+    "aiijjknllknmma",
+    ".aaooppqqrrssa",
+    "..aooppqqrrssa",
+    "...aattnnuuaa.",
+    "....attvvuua..",
+    ".....aaaaaa...",
+]
+
+
+def enable_windows_ansi():
+    """Ask the Windows console to interpret colour codes (off by default in the
+    old console, on in Windows Terminal). Returns whether it worked."""
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(-11)  # standard output
+        mode = ctypes.c_ulong()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return False
+        return bool(kernel32.SetConsoleMode(handle, mode.value | 0x0004))  # VIRTUAL_TERMINAL_PROCESSING
+    except Exception:
+        return False
+
+
+def setup_style(no_color=False):
+    """Decide once, at startup, whether to use colours and nice symbols; any
+    doubt means plain text (the output must never turn into escape-code garbage)."""
+    global COLOR, UNICODE, TRUECOLOR
+    COLOR = (not no_color and not os.environ.get("NO_COLOR") and sys.stdout.isatty()
+             and os.environ.get("TERM") != "dumb")
+    if COLOR and os.name == "nt":
+        COLOR = enable_windows_ansi()
+    # Terminals that can do 24-bit colour announce it in COLORTERM (VS Code, iTerm2, ...);
+    # modern Windows consoles support it without announcing.
+    TRUECOLOR = COLOR and (os.environ.get("COLORTERM", "").lower() in ("truecolor", "24bit")
+                           or os.name == "nt")
+    try:
+        "✓●○→".encode(sys.stdout.encoding or "ascii")
+        UNICODE = True
+    except (UnicodeEncodeError, LookupError):
+        UNICODE = False
+    if os.name == "nt" and not COLOR:
+        UNICODE = False  # the old Windows console's font often lacks these glyphs
+
+
+def paint(text, *styles):
+    """text in the given styles (names from STYLES); unchanged when colours are off."""
+    if not COLOR or not styles:
+        return text
+    return f"\033[{';'.join(STYLES[s] for s in styles)}m{text}{RESET}"
+
+
+def symbol(name):
+    return SYMBOLS[name][0 if UNICODE else 1]
+
+
+def typed_start():
+    """Switches to the colour of what the user types; reset again before output."""
+    return f"\033[{STYLES['yellow']}m" if COLOR else ""
+
+
+def reset_style():
+    if COLOR:
+        sys.stdout.write(RESET)
+        sys.stdout.flush()
+
+
+def readline_safe(prompt):
+    """Mark colour codes in a prompt as zero-width, so line editing doesn't count
+    them as visible characters (which would misplace the cursor). Only where
+    readline exists: elsewhere the markers would be printed."""
+    if not HAS_READLINE:
+        return prompt
+    return re.sub(r"(\033\[[0-9;]*m)", "\001\\1\002", prompt)
+
+
+def print_error(text):
+    print(paint(text, "red"))
+
+
+class ProgressBar:
+    """One line redrawn in place while a stage runs: 'fitting          [#####-----]  52%'.
+    Nothing is drawn unless stdout is a terminal. Until the first percentage arrives (some
+    methods never report one) the line says 'running...': no percentage is ever made up."""
+    WIDTH = 30
+
+    def __init__(self, label):
+        self.label = label
+        self.out = sys.stdout  # the real stream, even while sys.stdout is swapped for the proxy below
+        self.shown = self.out.isatty()
+        self.fraction = None
+        self.drawn = 0         # visible width of what is on screen
+        self.partial = False   # something else has printed half a line: don't draw over it
+        self.lock = threading.RLock()  # progress arrives from a joblib thread
+
+    def _line(self):
+        name = f"{self.label:<16}"
+        if self.fraction is None:
+            return paint(name + "running...", "grey")
+        filled = int(round(self.fraction * self.WIDTH))
+        full, empty = ("█", "░") if UNICODE else ("#", "-")
+        bar = paint(full * filled, "cyan") + paint(empty * (self.WIDTH - filled), "grey")
+        return f"{name}[{bar}] {paint(f'{self.fraction * 100:3.0f}%', 'bold')}"
+
+    def draw(self):
+        with self.lock:
+            if not self.shown or self.partial:
+                return
+            line = self._line()
+            visible = len(re.sub(r"\x1b\[[0-9;]*m", "", line))
+            self.out.write("\r" + line + " " * max(0, self.drawn - visible))
+            self.out.flush()
+            self.drawn = visible
+
+    def clear(self):
+        with self.lock:
+            if self.shown and self.drawn:
+                self.out.write("\r" + " " * self.drawn + "\r")
+                self.out.flush()
+                self.drawn = 0
+
+    def update(self, fraction):
+        with self.lock:
+            # never move backwards (a plugin may report out of order across threads)
+            self.fraction = max(self.fraction or 0.0, min(max(float(fraction), 0.0), 1.0))
+            self.draw()
+
+    def finish(self, completed):
+        with self.lock:
+            self.partial = False
+            if completed and self.fraction is not None:
+                self.fraction = 1.0
+                self.draw()
+                if self.shown:
+                    self.out.write("\n")
+                    self.out.flush()
+                self.drawn = 0
+            else:
+                self.clear()
+
+
+class _StdoutAboveBar:
+    """Stands in for sys.stdout while a bar is on screen: text a plugin prints wipes the
+    bar line, is written, and the bar is drawn again below it."""
+
+    def __init__(self, bar):
+        self.bar = bar
+
+    def write(self, text):
+        with self.bar.lock:
+            if text:
+                self.bar.clear()
+                self.bar.out.write(text)
+                self.bar.partial = not text.endswith("\n")
+                if not self.bar.partial:
+                    self.bar.draw()
+        return len(text)
+
+    def flush(self):
+        self.bar.out.flush()
+
+    def __getattr__(self, name):  # isatty(), encoding, ...
+        return getattr(self.bar.out, name)
+
+
+@contextlib.contextmanager
+def progress_bar(label):
+    """Show a progress bar for the work inside the 'with' block; the routines report
+    to it through utilsHelper.report_progress(). While it is on screen, printed text and log
+    messages appear above it, and the progress bars some plugins print themselves (tqdm)
+    are muted, so nothing tangles with it."""
+    bar = ProgressBar(label)
+    if not bar.shown:
+        yield bar
+        return
+    if not logging.getLogger().handlers:
+        logging.basicConfig()  # what the first logging call would do anyway; we need the handler now
+    patched = []
+    for handler in logging.getLogger().handlers:
+        original = handler.emit
+
+        def emit(record, original=original):
+            with bar.lock:
+                bar.clear()
+                original(record)
+                bar.draw()
+
+        handler.emit = emit
+        patched.append(handler)
+    tqdm_class = None
+    try:
+        from tqdm import tqdm as tqdm_class
+        tqdm_original_init = tqdm_class.__init__
+        tqdm_class.__init__ = functools.partialmethod(tqdm_original_init, disable=True)
+    except ImportError:
+        tqdm_class = None
+    real_stdout = sys.stdout
+    sys.stdout = _StdoutAboveBar(bar)
+    utilsHelper.set_progress_listener(bar.update)
+    bar.draw()
+    completed = False
+    try:
+        yield bar
+        completed = True
+    finally:
+        utilsHelper.set_progress_listener(None)
+        sys.stdout = real_stdout
+        if tqdm_class is not None:
+            tqdm_class.__init__ = tqdm_original_init
+        for handler in patched:
+            del handler.emit  # back to the class's own emit
+        bar.finish(completed)
+
+
+def nearest_256(rgb):
+    """The 256-colour code closest to an (r, g, b) colour. Codes 0-15 are skipped:
+    their colours depend on the user's terminal theme."""
+    levels = (0, 95, 135, 175, 215, 255)
+
+    def code_rgb(n):
+        if n >= 232:  # grey ramp
+            v = 8 + 10 * (n - 232)
+            return (v, v, v)
+        n -= 16       # 6x6x6 colour cube
+        return (levels[n // 36], levels[(n // 6) % 6], levels[n % 6])
+
+    return min(range(16, 256), key=lambda n: sum((p - q) ** 2 for p, q in zip(rgb, code_rgb(n))))
+
+
+def mascot_lines():
+    """Eve as text lines. Every artwork pixel is two spaces with a background colour
+    (square on a typical terminal). Unlike block-drawing characters, a background
+    fills the whole character cell, so no seams show between lines. Uses 24-bit
+    colour where the terminal has it, the nearest 256-colour code otherwise."""
+    def background(rgb):
+        if TRUECOLOR:
+            return f"\033[48;2;{rgb[0]};{rgb[1]};{rgb[2]}m"
+        return f"\033[48;5;{nearest_256(rgb)}m"
+
+    lines = []
+    for row in MASCOT_ROWS:
+        cells = []
+        for ch in row:
+            rgb = MASCOT_PALETTE.get(ch)
+            cells.append("  " if rgb is None else f"{background(rgb)}  {RESET}")
+        lines.append("".join(cells))
+    return lines
+
+
+# ---------------------------------------------------------------------------
 # The shell
 # ---------------------------------------------------------------------------
 
 class EveShell(cmd.Cmd):
-    intro = ("\nEVE interactive shell. Type 'help' for the list of commands, "
-             "'help <command>' for details, 'quit' to leave.\n"
-             f"Parameters are stored in {os.path.relpath(PARAMS_PATH)}.\n")
     prompt = "eve> "
 
     def __init__(self):
         super().__init__()
+        self.intro = self._intro()
         self.events = None
         self.events_file = None
         self.finding_result = None
@@ -234,31 +535,65 @@ class EveShell(cmd.Cmd):
 
     # --- shell plumbing ---------------------------------------------------
 
+    def _intro(self):
+        """Welcome text, with Eve beside it when the terminal can show her."""
+        text = ["EVE interactive shell",
+                "Type 'help' for the list of commands,",
+                "'help <command>' for details, 'quit' to leave.",
+                f"Parameters are stored in {os.path.relpath(PARAMS_PATH)}."]
+        art = mascot_lines() if COLOR else []
+        if not art:
+            return "\n" + "\n".join(text) + "\n"
+        top = (len(art) - len(text)) // 2  # centre the text beside the picture
+        lines = []
+        for i, row in enumerate(art):
+            j = i - top
+            side = text[j] if 0 <= j < len(text) else ""
+            lines.append(f"  {row}   {paint(side, 'bold') if j == 0 else side}")
+        return "\n" + "\n".join(lines) + "\n"
+
     def _pipeline_line(self):
         """The line above the prompt: each stage, whether it ran, and with what.
-        ✓ ran with the current settings, ● ran but its settings changed since, ○ not run."""
+        ✓ ran with the current settings, ● ran but its settings changed since, ○ not run.
+        The next stage to run (the first that isn't ✓) is underlined."""
         try:
             params = read_params()
         except Exception as e:  # e.g. a typo made while editing params.yaml by hand
-            return f"(params.yaml can't be read: {e})"
+            return paint(f"(params.yaml can't be read: {e})", "red")
         if self.events is None:
-            parts = ["load ○"]
+            steps = [("load", "todo", "-", "")]
         else:
-            parts = [f"load ✓ {os.path.splitext(os.path.basename(self.events_file))[0]}"]
+            name = os.path.splitext(os.path.basename(self.events_file))[0]
+            steps = [("load", "done", name, "")]
         short = {"post_processing": "post", "visualisation": "vis"}
         for stage in PIPELINE:
             methods = "+".join(method.split(".", 1)[-1] for method, _ in stage_settings(params, stage) if method)
             last = self.last_run.get(stage)
             if last is None:
-                mark, summary = "○", ""
+                steps.append((short.get(stage, stage), "todo", methods or "-", ""))
             else:
-                mark = "✓" if last["settings"] == stage_settings(params, stage) else "●"
-                summary = f" ({last['summary']})"
-            parts.append(f"{short.get(stage, stage)} {mark} {methods or '-'}{summary}")
-        return " → ".join(parts)
+                state = "done" if last["settings"] == stage_settings(params, stage) else "stale"
+                steps.append((short.get(stage, stage), state, methods or "-", last["summary"]))
+        next_index = next((i for i, step in enumerate(steps) if step[1] != "done"), None)
+        state_colour = {"done": "green", "stale": "yellow", "todo": "grey"}
+        parts = []
+        for i, (label, state, methods, summary) in enumerate(steps):
+            part = paint(label, state_colour[state], *(("bold", "underline") if i == next_index else ()))
+            part += paint(" | ", "grey")
+            part += paint(methods, "bold", "cyan") if state != "todo" else paint(methods or "-", "grey")
+            part += " " + paint(symbol(state), state_colour[state])
+            if summary:
+                part += " " + paint(f"({summary})", "grey")
+            parts.append(part)
+        return paint(f" {symbol('arrow')} ", "grey").join(parts)
 
     def _update_prompt(self):
-        self.prompt = f"\n{self._pipeline_line()}\neve> "
+        prompt = f"\n{self._pipeline_line()}\n{paint('eve>', 'bold', 'cyan')} {typed_start()}"
+        self.prompt = readline_safe(prompt)
+
+    def precmd(self, line):
+        reset_style()  # the typed text was coloured; the output must not be
+        return line
 
     def postcmd(self, stop, line):
         self._update_prompt()
@@ -281,18 +616,18 @@ class EveShell(cmd.Cmd):
         try:
             return super().onecmd(line)
         except ConfigError as e:
-            print(str(e.code).strip())
+            print_error(str(e.code).strip())
         except KeyboardInterrupt:
             print("\nInterrupted.")
         except Exception as e:
-            print(f"Error: {type(e).__name__}: {e}")
+            print_error(f"Error: {type(e).__name__}: {e}")
 
     def emptyline(self):
         pass  # cmd's default would repeat the previous command, e.g. a long run
 
     def default(self, line):
         word = line.split()[0]
-        print(f"Unknown command '{word}'.{suggest(word, self._command_names())} Type 'help' for the list.")
+        print_error(f"Unknown command '{word}'.{suggest(word, self._command_names())} Type 'help' for the list.")
 
     def _command_names(self):
         return sorted(name[3:] for name in self.get_names()
@@ -364,7 +699,8 @@ class EveShell(cmd.Cmd):
                 except ConfigError:
                     continue
                 mark = "*" if dotted_name in current else " "
-                print(f" {mark} {dotted_name:<50} {meta.get('display_name', '')}")
+                line = f" {mark} {dotted_name:<50} {meta.get('display_name', '')}"
+                print(paint(line, "cyan") if dotted_name in current else line)
             print()
             return
 
@@ -552,14 +888,65 @@ class EveShell(cmd.Cmd):
         return self._complete_from(STAGES, text)
 
     def do_params(self, arg):
-        """params [section]: print the current parameters (all of params.yaml, or one section)."""
+        """params [section]: list every method of each stage with all its parameters.
+
+        The method(s) in use are bold cyan and marked *, with the values from params.yaml in the
+        normal colour (parameters the file doesn't list are grey, with '(default)'). Every other
+        method is grey, with its default values. input, global_settings and the other sections
+        list their values.
+        """
         params = read_params()
         section = arg.strip()
-        if section:
-            if section not in params:
-                raise ConfigError(f"No section '{section}' in params.yaml.{suggest(section, params)}")
-            params = {section: params[section]}
-        print(yaml.safe_dump(params, sort_keys=False, default_flow_style=False, allow_unicode=True))
+        if section and section not in params:
+            raise ConfigError(f"No section '{section}' in params.yaml.{suggest(section, params)}")
+        head = [key for key in ("input", "global_settings") if key in params]
+        order = head + list(STAGES) + [key for key in params if key not in STAGES and key not in head]
+        for name in ([section] if section else order):
+            if name in STAGES:
+                self._print_catalogue(name, params)
+            else:
+                print(paint(f"\n{name}", "bold"))
+                value = params[name]
+                for key, v in (value.items() if isinstance(value, dict) else [("", value)]):
+                    print(f"  {key:<28} {v}".rstrip())
+                print()
+
+    def _print_catalogue(self, stage, params):
+        """Every method of a stage with all its parameters: the ones in use in colour,
+        all the others grey."""
+        print(paint(f"\n{stage}", "bold"))
+        in_use = {}
+        for section, label in stage_methods(params, stage):
+            in_use.setdefault(section.get("method"), []).append((section, label))
+        for dotted_name in self._all_methods(stage):
+            try:
+                module, _, meta = get_metadata(dotted_name)
+            except ConfigError:
+                continue
+            specs = param_specs(meta, module)
+            for section, label in in_use.get(dotted_name) or [(None, "")]:
+                if section is None:
+                    print(paint(f"  {dotted_name}", "grey"))
+                    for name, spec in specs.items():
+                        print(paint(f"      {name:<28} {default_text(spec)} (default)", "grey"))
+                    continue
+                step = f"   [{label.split('.', 1)[1]}]" if stage in LIST_SECTIONS else ""
+                print(paint(f"* {dotted_name}{step}", "bold", "cyan"))
+                values = section.get("parameters") or {}
+                prefix = label.split(".", 1)[1] + "." if "." in label else ""
+                for name, spec in specs.items():
+                    if name in values:
+                        print(f"      {prefix + name:<28} {values[name]}")
+                    else:
+                        print(paint(f"      {prefix + name:<28} {default_text(spec)} (default)", "grey"))
+                # In params.yaml but not a parameter of this method (e.g. a typo made in an
+                # editor), and settings of the section that only eve_run.py uses.
+                for name in values:
+                    if name not in specs:
+                        print(f"      {prefix + name:<28} {values[name]}   (not a parameter of this method)")
+                for key, value in section.items():
+                    if key not in ("method", "parameters"):
+                        print(f"      {key:<28} {value}")
 
     def complete_params(self, text, line, begidx, endidx):
         return self._complete_from(list(read_params()), text)
@@ -613,10 +1000,12 @@ class EveShell(cmd.Cmd):
     def _ask(self, question):
         """input() that treats end-of-input (e.g. Ctrl-D) as 'q'."""
         try:
-            return input(question).strip()
+            return input(readline_safe(question + typed_start())).strip()
         except EOFError:
             print()
             return "q"
+        finally:
+            reset_style()
 
     def _review(self, stage):
         """The guided part of 'run': pick the method(s), then review every
@@ -633,7 +1022,8 @@ class EveShell(cmd.Cmd):
         print(f"\n{stage} methods (* = current):")
         for i, (dotted_name, display) in enumerate(methods, start=1):
             mark = "*" if dotted_name in current else " "
-            print(f" {mark}{i:>3}. {dotted_name:<48} {display}")
+            line = f" {mark}{i:>3}. {dotted_name:<48} {display}"
+            print(paint(line, "cyan") if dotted_name in current else line)
         if stage in LIST_SECTIONS:
             question = (f"Methods to run, in order (e.g. '2 5'); 0 = none "
                         f"[Enter = keep: {' '.join(current) or 'none'}]: ")
@@ -683,23 +1073,26 @@ class EveShell(cmd.Cmd):
             try:
                 self.do_set(f"{stage}.{parts[0]} {parts[1]}")
             except ConfigError as e:
-                print("  " + str(e.code).strip().replace(f"'{stage}.", "'"))
+                print_error("  " + str(e.code).strip().replace(f"'{stage}.", "'"))
 
     def _print_param_table(self, section, label):
-        """One method's parameters: current value (or the plugin default when
-        params.yaml doesn't list it), and what each one means."""
+        """One method's parameters for the 'run' review: the value in params.yaml, or the
+        plugin default in grey when the file doesn't list it, then what it means."""
         module, _, meta = get_metadata(section["method"])
         values = section.get("parameters") or {}
         prefix = label.split(".", 1)[1] + "." if "." in label else ""
-        print(f"\n{label}: {section['method']} ({meta.get('display_name', '')})")
+        print(paint(f"\n{label}: {section['method']} ({meta.get('display_name', '')})", "bold"))
         for name, spec in param_specs(meta, module).items():
-            value = f"{values[name]}" if name in values else f"{spec.get('default')} (default)"
+            if name in values:
+                shown = f"{values[name]!s}".ljust(32)
+            else:
+                shown = paint(f"{default_text(spec)} (default)".ljust(32), "grey")
             description = (spec.get("description") or "").strip()
             if len(description) > 70:
                 description = description[:67] + "..."
-            print(f"  {prefix + name:<28} {value:<32} {description}")
+            print(f"  {prefix + name:<28} {shown} {description}")
             if spec.get("choices"):
-                print(f"  {'':<28} options: {', '.join(spec['choices'])}")
+                print(paint(f"  {'':<28} options: {', '.join(spec['choices'])}", "grey"))
         print()
 
     def _run_stage(self, stage):
@@ -709,7 +1102,8 @@ class EveShell(cmd.Cmd):
         if stage == "finding":
             func, kwargs = resolve_method(params["finding"], STAGES[stage], "finding")
             t0 = time.time()
-            result, _ = func(self.events, global_settings, **kwargs)
+            with progress_bar("finding"):
+                result, _ = func(self.events, global_settings, **kwargs)
             self.finding_result = result
             self.localizations = self.post_localizations = self.image = None
             summary = f"{len(result)} cand"
@@ -718,7 +1112,8 @@ class EveShell(cmd.Cmd):
         elif stage == "fitting":
             func, kwargs = resolve_method(params["fitting"], STAGES[stage], "fitting")
             t0 = time.time()
-            result, _ = func(self.finding_result, global_settings, **kwargs)
+            with progress_bar("fitting"):
+                result, _ = func(self.finding_result, global_settings, **kwargs)
             self.localizations = result
             self.post_localizations = self.image = None
             summary = f"{n_valid(result)} locs"
@@ -731,11 +1126,17 @@ class EveShell(cmd.Cmd):
             if not steps:
                 raise ConfigError("No post_processing steps. Add some with 'use post_processing <method> ...'.")
             localizations = self.localizations
-            for (func, kwargs), dotted_name in steps:
-                t0 = time.time()
-                localizations, _ = func(localizations, self.finding_result, global_settings, **kwargs)
-                print(f"Post-processing {dotted_name}: {n_valid(localizations)} localizations "
-                      f"({time.time() - t0:.1f}s).")
+            step_lines = []  # printed once the bar is finished, so they don't mix with it
+            with progress_bar("post_processing") as bar:
+                for i, ((func, kwargs), dotted_name) in enumerate(steps):
+                    bar.update(i / len(steps))  # percentage = finished steps
+                    t0 = time.time()
+                    localizations, _ = func(localizations, self.finding_result, global_settings, **kwargs)
+                    bar.update((i + 1) / len(steps))
+                    step_lines.append(f"Post-processing {dotted_name}: {n_valid(localizations)} localizations "
+                                      f"({time.time() - t0:.1f}s).")
+            for line in step_lines:
+                print(line)
             self.post_localizations = localizations
             self.image = None
             summary = f"{n_valid(localizations)} locs"
@@ -745,7 +1146,8 @@ class EveShell(cmd.Cmd):
             source = "post-processed" if self.post_localizations is not None else "fitting"
             func, kwargs = resolve_method(params["visualisation"], STAGES[stage], "visualisation")
             t0 = time.time()
-            image, scale = func(localizations, global_settings, **kwargs)
+            with progress_bar("visualisation"):
+                image, scale = func(localizations, global_settings, **kwargs)
             self.image = image
             summary = f"of {'post' if source == 'post-processed' else 'fitting'}"
             print(f"Visualisation of {n_valid(localizations)} {source} localizations: "
@@ -924,8 +1326,16 @@ class EveShell(cmd.Cmd):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Interactive EVE shell. Type 'help' at the prompt.")
+    parser.add_argument("--no-color", action="store_true",
+                        help="plain text: no colours and no mascot (NO_COLOR=1 does the same)")
+    args = parser.parse_args()
+    setup_style(args.no_color)
     os.chdir(REPO_ROOT)  # relative paths in params.yaml are relative to the EVE folder
-    EveShell().cmdloop()
+    try:
+        EveShell().cmdloop()
+    finally:
+        reset_style()  # never leave the user's terminal in a colour
 
 
 if __name__ == "__main__":
