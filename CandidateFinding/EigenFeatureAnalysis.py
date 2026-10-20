@@ -406,6 +406,7 @@ def eigenFeature_analysis(npy_array,settings,**kwargs):
     ms_to_px=float(kwargs['ratio_ms_to_px'])
     
     eig_valso3d, point_cloud = EigenValueCalculation(npyarr,kwargs)
+    utilsHelper.report_progress(0.70)  # covariances and eigenvalues done: ~70% of the time (only used by the progress bar)
     
     #Calculate linearity
     linearity = (eig_valso3d[:,0]-eig_valso3d[:,1])/eig_valso3d[:,0]
@@ -442,6 +443,7 @@ def eigenFeature_analysis(npy_array,settings,**kwargs):
     noisepoints = points[(linearity >= linearity_cutoff) | (maxeigenval >= maxeigenvalcutoff), :]
 
     cluster_labels = dbscan_with_trialError(clusterpoints,eps=int(kwargs['DBSCAN_eps']),n_neighbours=int(kwargs['DBSCAN_n_neighbours']))
+    utilsHelper.report_progress(0.79)  # DBSCAN done (only used by the progress bar)
     
     if len(clusterpoints) > 0:
         candidates = clusterPoints_to_candidates(clusterpoints,cluster_labels,ms_to_px)
@@ -449,6 +451,8 @@ def eigenFeature_analysis(npy_array,settings,**kwargs):
         logging.error("No clusterpoints found via spectral clustering - maximum eigenval probably wrong!")
         candidates = {}
     
+    utilsHelper.report_progress(0.99)  # candidates built (only used by the progress bar)
+
     time0 = time.time()
     #Remove small/large bounding-box data
     candidates, _, _ = utilsHelper.removeCandidatesWithLargeSmallBoundingBox(candidates,settings)

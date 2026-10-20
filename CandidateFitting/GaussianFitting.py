@@ -418,7 +418,7 @@ def Gaussian2D(candidate_dic,settings,**kwargs):
     logging.info("Candidate fitting split in "+str(njobs)+" job(s) and divided on "+str(num_cores)+" core(s).")
 
     # Determine all localizations
-    RES = Parallel(n_jobs=num_cores,backend="loky")(delayed(localize_canditates2D)(i, data_split[i], fit_func, dist_func, time_fit, *params) for i in range(len(data_split)))
+    RES = utilsHelper.parallel_with_progress(num_cores, (delayed(localize_canditates2D)(i, data_split[i], fit_func, dist_func, time_fit, *params) for i in range(len(data_split))))
     
     localization_list = [res[0] for res in RES]
     localizations = pd.concat(localization_list, ignore_index=True)
@@ -461,7 +461,7 @@ def LogGaussian2D(candidate_dic,settings,**kwargs):
     logging.info("Candidate fitting split in "+str(njobs)+" job(s) and divided on "+str(num_cores)+" core(s).")
 
     # Determine all localizations
-    RES = Parallel(n_jobs=num_cores,backend="loky")(delayed(localize_canditates2D)(i, data_split[i], fit_func, dist_func, time_fit, *params) for i in range(len(data_split)))
+    RES = utilsHelper.parallel_with_progress(num_cores, (delayed(localize_canditates2D)(i, data_split[i], fit_func, dist_func, time_fit, *params) for i in range(len(data_split))))
     
     localization_list = [res[0] for res in RES]
     localizations = pd.concat(localization_list)
@@ -516,7 +516,7 @@ def Gaussian3D(candidate_dic,settings,**kwargs):
     logging.info("Candidate fitting split in "+str(njobs)+" job(s) and divided on "+str(num_cores)+" core(s).")
 
     # Determine all localizations
-    RES = Parallel(n_jobs=num_cores,backend="loky")(delayed(localize_canditates2D)(i, data_split[i], fit_func, dist_func, time_fit, *params) for i in range(len(data_split)))
+    RES = utilsHelper.parallel_with_progress(num_cores, (delayed(localize_canditates2D)(i, data_split[i], fit_func, dist_func, time_fit, *params) for i in range(len(data_split))))
     
     localization_list = [res[0] for res in RES]
     localizations = pd.concat(localization_list)
@@ -572,7 +572,7 @@ def LogGaussian3D(candidate_dic,settings,**kwargs):
     logging.info("Candidate fitting split in "+str(njobs)+" job(s) and divided on "+str(num_cores)+" core(s).")
 
     # Determine all localizations
-    RES = Parallel(n_jobs=num_cores,backend="loky")(delayed(localize_canditates2D)(i, data_split[i], fit_func, dist_func, time_fit, *params) for i in range(len(data_split)))
+    RES = utilsHelper.parallel_with_progress(num_cores, (delayed(localize_canditates2D)(i, data_split[i], fit_func, dist_func, time_fit, *params) for i in range(len(data_split))))
     
     localization_list = [res[0] for res in RES]
     localizations = pd.concat(localization_list)

@@ -102,7 +102,7 @@ def AverageXYpos(candidate_dic,settings,**kwargs):
     logging.info("Candidate fitting split in "+str(njobs)+" job(s) and divided on "+str(num_cores)+" core(s).")
 
     # Determine all localizations
-    RES = Parallel(n_jobs=num_cores,backend="loky")(delayed(localize_canditates2D)(i, data_split[i], time_fit, pixel_size, dist_func) for i in range(len(data_split)))
+    RES = utilsHelper.parallel_with_progress(num_cores, (delayed(localize_canditates2D)(i, data_split[i], time_fit, pixel_size, dist_func) for i in range(len(data_split))))
     
     localization_list = [res[0] for res in RES]
     if len(localization_list) == 0:

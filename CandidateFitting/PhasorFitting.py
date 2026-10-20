@@ -213,7 +213,7 @@ def PhasorFitting(candidate_dic,settings,**kwargs):
     logging.info("Candidate fitting split in "+str(njobs)+" job(s) and divided on "+str(num_cores)+" core(s).")
 
     # Determine all localizations
-    RES = Parallel(n_jobs=num_cores,backend="loky")(delayed(phasor2D)(i, data_split[i], distfunc, time_fit, pixel_size) for i in range(len(data_split)))
+    RES = utilsHelper.parallel_with_progress(num_cores, (delayed(phasor2D)(i, data_split[i], distfunc, time_fit, pixel_size) for i in range(len(data_split))))
 
     localization_list = [res for res in RES]
     localizations = pd.concat(localization_list)
@@ -245,7 +245,7 @@ def PhasorFitting_customTimeFit(candidate_dic,settings,**kwargs):
     logging.info("Candidate fitting split in "+str(njobs)+" job(s) and divided on "+str(num_cores)+" core(s).")
 
     # Determine all localizations
-    RES = Parallel(n_jobs=num_cores,backend="loky")(delayed(phasor2D_customTime)(i, data_split[i], distfunc, time_fit, pixel_size) for i in range(len(data_split)))
+    RES = utilsHelper.parallel_with_progress(num_cores, (delayed(phasor2D_customTime)(i, data_split[i], distfunc, time_fit, pixel_size) for i in range(len(data_split))))
 
     localization_list = [res for res in RES]
     localizations = pd.concat(localization_list)

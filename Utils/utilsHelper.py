@@ -1,7 +1,56 @@
+import threading
 import warnings
 import pandas as pd
 import numpy as np
 import logging
+
+#-------------------------------------------------------------------------------------------------------------------------------
+# Progress reporting
+#-------------------------------------------------------------------------------------------------------------------------------
+# Routines can report how far they are (a fraction between 0 and 1) with report_progress(). This does
+# nothing unless something has registered itself with set_progress_listener() (eve_cli.py does, for its
+# progress bar), so the GUI and scripts behave exactly as before.
+_progress_listener = None
+
+def set_progress_listener(listener):
+    """Register a function that receives the fraction done (0-1), or None to stop listening."""
+    global _progress_listener
+    _progress_listener = listener
+
+def report_progress(fraction):
+    if _progress_listener is not None:
+        _progress_listener(fraction)
+
+def parallel_with_progress(n_jobs, tasks, backend="loky"):
+    """Exactly Parallel(n_jobs=n_jobs, backend=backend)(tasks) - the same computation on the same
+    chunks, with the same results - but it also reports the finished fraction after every chunk
+    when someone listens. If hooking into joblib fails, the tasks simply run without reporting."""
+    from joblib import Parallel
+    tasks = list(tasks)
+    if _progress_listener is None or len(tasks) == 0:
+        return Parallel(n_jobs=n_jobs, backend=backend)(tasks)
+    try:
+        import joblib.parallel
+        original = joblib.parallel.BatchCompletionCallBack
+        total = len(tasks)
+        finished = [0]
+        lock = threading.Lock()
+
+        class ReportingCallBack(original):
+            def __call__(self, *args, **kwargs):
+                with lock:
+                    finished[0] += getattr(self, "batch_size", 1)
+                    fraction = min(finished[0], total) / total
+                report_progress(fraction)
+                return super().__call__(*args, **kwargs)
+
+        joblib.parallel.BatchCompletionCallBack = ReportingCallBack
+    except Exception:
+        return Parallel(n_jobs=n_jobs, backend=backend)(tasks)
+    try:
+        return Parallel(n_jobs=n_jobs, backend=backend)(tasks)
+    finally:
+        joblib.parallel.BatchCompletionCallBack = original
 
 def argumentChecking(dictionaryInfo, function_name, given_kwargs):
     #Checks whether named required and optional arguments are given or not, and gives errors when things are missing.
