@@ -436,7 +436,7 @@ def PolarityMatching_time(localizations,findingResult,settings,**kwargs):
             popt2Unc = np.sqrt(pcov[2][2])/popt[2]
             popt3Unc = np.sqrt(pcov[3][3])/popt[3]
         
-        fig = plt.figure()
+        fig = plt.figure(figsize=(14,8))
         #4 subplots. 2 top ones: linear. 2 bottom ones: log (y).
         #            2 left ones: only in data range. 2 right ones: full exp decay
         colHist = '#606060'
@@ -452,47 +452,44 @@ def PolarityMatching_time(localizations,findingResult,settings,**kwargs):
         linestyleDecay2 = '--'
         
         ax = fig.add_subplot(231)
-        ax.plot(bin_edges[1:],histV,colHist,linestyle=linestyleHist)
-        ax.plot(bin_edges[1:],filterhistV,colHistFilt,linestyle=linestyleHistFilt)
-        ax.plot([peakTime,peakTime],[0,maxV*1.25],colPeak,linestyle=linestylePeak)
-        ax.plot([minTimeFit,minTimeFit],[0,maxV*1.25],colOffset,linestyle=linestyleOffset)
+        ax.plot(bin_edges[1:],histV,colHist,linestyle=linestyleHist,label='Data')
+        ax.plot(bin_edges[1:],filterhistV,colHistFilt,linestyle=linestyleHistFilt,label='Smoothed data')
+        ax.plot([peakTime,peakTime],[0,maxV*1.25],colPeak,linestyle=linestylePeak,label='Peak of smoothed data')
+        ax.plot([minTimeFit,minTimeFit],[0,maxV*1.25],colOffset,linestyle=linestyleOffset,label='Fit start (peak + offset)')
         if n_curves == 1:
-            ax.plot(valuesToFit[0],exponential_decay_1(valuesToFit[0], *popt), colDecay, linestyle=linestyleDecay1)
+            ax.plot(valuesToFit[0],exponential_decay_1(valuesToFit[0], *popt), colDecay, linestyle=linestyleDecay1,label='Fit (fitted range)')
             #let the ax title reflect the fit params:
             fig.suptitle('t1/2 = ' + str(round(1/popt[1],2)) + '+-' + str(round(1/popt[1]*popt1Unc,2)) + 'ms')
         elif n_curves == 2:
-            ax.plot(valuesToFit[0],exponential_decay_2(valuesToFit[0], *popt), colDecay, linestyle=linestyleDecay1)
+            ax.plot(valuesToFit[0],exponential_decay_2(valuesToFit[0], *popt), colDecay, linestyle=linestyleDecay1,label='Fit (fitted range)')
             #let the ax title reflect the fit params:
             fig.suptitle('t1/2 = ' + str(round(1/popt[1],2)) + '+-' + str(round(1/popt[1]*popt1Unc,2)) + ' (' + str(round(popt[3]*100,1)) +'%) | ' + str(round(1/popt[2],2)) + '+-' + str(round(1/popt[2]*popt2Unc,2)) + '(' + str(round((1-popt[3])*100,1)) +'%)  (ms)')
             # ax.set_title('a = ' + str(round(popt[0],4)) + ', b = ' + str(round(popt[1],4)) + ', c = ' + str(round(popt[2],4)) + ', f1 = ' + str(round(popt[3],4)))
         elif n_curves == 3:
-            ax.plot(valuesToFit[0],exponential_decay_3(valuesToFit[0], *popt), colDecay, linestyle=linestyleDecay1)
+            ax.plot(valuesToFit[0],exponential_decay_3(valuesToFit[0], *popt), colDecay, linestyle=linestyleDecay1,label='Fit (fitted range)')
             #let the ax title reflect the fit params:
             #set the ax title for 3 curves:
             fig.suptitle('t1/2 = ' + str(round(1/popt[1],2)) + '+-' + str(round(1/popt[1]*popt1Unc,2)) + ' (' + str(round(popt[4]*100,1)) +'%) | ' + str(round(1/popt[2],2)) + '+-' + str(round(1/popt[2]*popt2Unc,2)) + ' (' + str(round((popt[5])*100,1)) +'%) | ' + str(round(1/popt[3],2)) + '+-' + str(round(1/popt[3]*popt3Unc,2)) + ' (' + str(round((1-popt[4]-popt[5])*100,1)) +'%)  (ms)')
         ax.set_ylabel('Probability')
         
         ax = fig.add_subplot(232)
-        ax.plot(bin_edges[1:],histV,colHist,linestyle=linestyleHist)
-        ax.plot(bin_edges[1:],filterhistV,colHistFilt,linestyle=linestyleHistFilt)
-        ax.plot([peakTime,peakTime],[0,maxV*1.25],colPeak,linestyle=linestylePeak)
-        ax.plot([minTimeFit,minTimeFit],[0,maxV*1.25],colOffset,linestyle=linestyleOffset)
+        ax.plot(bin_edges[1:],histV,colHist,linestyle=linestyleHist,label='Data')
+        ax.plot(bin_edges[1:],filterhistV,colHistFilt,linestyle=linestyleHistFilt,label='Smoothed data')
+        ax.plot([peakTime,peakTime],[0,maxV*1.25],colPeak,linestyle=linestylePeak,label='Peak of smoothed data')
+        ax.plot([minTimeFit,minTimeFit],[0,maxV*1.25],colOffset,linestyle=linestyleOffset,label='Fit start (peak + offset)')
         if n_curves == 1:
-            ax.plot(bin_edges,exponential_decay_1(bin_edges, *popt), colDecay, linestyle=linestyleDecay2)
-            ax.plot(valuesToFit[0],exponential_decay_1(valuesToFit[0], *popt), colDecay, linestyle=linestyleDecay1)
+            ax.plot(bin_edges,exponential_decay_1(bin_edges, *popt), colDecay, linestyle=linestyleDecay2,label='Fit, extended to all times')
+            ax.plot(valuesToFit[0],exponential_decay_1(valuesToFit[0], *popt), colDecay, linestyle=linestyleDecay1,label='Fit (fitted range)')
         elif n_curves == 2:
-            ax.plot(bin_edges,exponential_decay_2(bin_edges, *popt), colDecay, linestyle=linestyleDecay2)
-            ax.plot(valuesToFit[0],exponential_decay_2(valuesToFit[0], *popt), colDecay, linestyle=linestyleDecay1)
+            ax.plot(bin_edges,exponential_decay_2(bin_edges, *popt), colDecay, linestyle=linestyleDecay2,label='Fit, extended to all times')
+            ax.plot(valuesToFit[0],exponential_decay_2(valuesToFit[0], *popt), colDecay, linestyle=linestyleDecay1,label='Fit (fitted range)')
         elif n_curves == 3:
-            ax.plot(bin_edges,exponential_decay_3(bin_edges, *popt), colDecay, linestyle=linestyleDecay2)
-            ax.plot(valuesToFit[0],exponential_decay_3(valuesToFit[0], *popt), colDecay, linestyle=linestyleDecay1)
+            ax.plot(bin_edges,exponential_decay_3(bin_edges, *popt), colDecay, linestyle=linestyleDecay2,label='Fit, extended to all times')
+            ax.plot(valuesToFit[0],exponential_decay_3(valuesToFit[0], *popt), colDecay, linestyle=linestyleDecay1,label='Fit (fitted range)')
         
-        #add a legend:
-        ax.legend(['Data','Smoothed','Peak','Offset','Exp. fit'])
         
-        #Plot the difference between expected and data
+        #Plot the difference between the fit and the data
         ax = fig.add_subplot(233)
-        ax.set_title('Expected minus Data')
         
         if n_curves == 1:
             totVals = exponential_decay_1(bin_edges[1:], *popt)
@@ -501,46 +498,44 @@ def PolarityMatching_time(localizations,findingResult,settings,**kwargs):
         elif n_curves == 3:
             totVals = exponential_decay_3(bin_edges[1:], *popt)
             
-        ax.plot(bin_edges[1:],totVals-histV,colHist,linestyle=linestyleHist)
-        ax.plot(bin_edges[1:],totVals-filterhistV,colHistFilt,linestyle=linestyleHistFilt)
-        ax.legend(['Difference','Smoothed difference'])
+        ax.plot(bin_edges[1:],totVals-histV,colHist,linestyle=linestyleHist,label='Fit minus data')
+        ax.plot(bin_edges[1:],totVals-filterhistV,colHistFilt,linestyle=linestyleHistFilt,label='Fit minus smoothed data')
         
         
         ax = fig.add_subplot(234)
-        ax.plot(bin_edges[1:],histV,colHist,linestyle=linestyleHist)
-        ax.plot(bin_edges[1:],filterhistV,colHistFilt,linestyle=linestyleHistFilt)
-        ax.plot([peakTime,peakTime],[0,maxV*1.25],colPeak,linestyle=linestylePeak)
-        ax.plot([minTimeFit,minTimeFit],[0,maxV*1.25],colOffset,linestyle=linestyleOffset)
+        ax.plot(bin_edges[1:],histV,colHist,linestyle=linestyleHist,label='Data')
+        ax.plot(bin_edges[1:],filterhistV,colHistFilt,linestyle=linestyleHistFilt,label='Smoothed data')
+        ax.plot([peakTime,peakTime],[0,maxV*1.25],colPeak,linestyle=linestylePeak,label='Peak of smoothed data')
+        ax.plot([minTimeFit,minTimeFit],[0,maxV*1.25],colOffset,linestyle=linestyleOffset,label='Fit start (peak + offset)')
         if n_curves == 1:
-            ax.plot(valuesToFit[0],exponential_decay_1(valuesToFit[0], *popt), colDecay, linestyle=linestyleDecay1)
+            ax.plot(valuesToFit[0],exponential_decay_1(valuesToFit[0], *popt), colDecay, linestyle=linestyleDecay1,label='Fit (fitted range)')
         elif n_curves == 2:
-            ax.plot(valuesToFit[0],exponential_decay_2(valuesToFit[0], *popt), colDecay, linestyle=linestyleDecay1)
+            ax.plot(valuesToFit[0],exponential_decay_2(valuesToFit[0], *popt), colDecay, linestyle=linestyleDecay1,label='Fit (fitted range)')
         elif n_curves == 3:
-            ax.plot(valuesToFit[0],exponential_decay_3(valuesToFit[0], *popt), colDecay, linestyle=linestyleDecay1)
+            ax.plot(valuesToFit[0],exponential_decay_3(valuesToFit[0], *popt), colDecay, linestyle=linestyleDecay1,label='Fit (fitted range)')
         ax.set_yscale('log')
         ax.set_ylabel('Probability')
         ax.set_xlabel('Time between pos/neg events (ms)')
             
         ax = fig.add_subplot(235)
-        ax.plot(bin_edges[1:],histV,colHist,linestyle=linestyleHist)
-        ax.plot(bin_edges[1:],filterhistV,colHistFilt,linestyle=linestyleHistFilt)
-        ax.plot([peakTime,peakTime],[0,maxV*1.25],colPeak,linestyle=linestylePeak)
-        ax.plot([minTimeFit,minTimeFit],[0,maxV*1.25],colOffset,linestyle=linestyleOffset)
+        ax.plot(bin_edges[1:],histV,colHist,linestyle=linestyleHist,label='Data')
+        ax.plot(bin_edges[1:],filterhistV,colHistFilt,linestyle=linestyleHistFilt,label='Smoothed data')
+        ax.plot([peakTime,peakTime],[0,maxV*1.25],colPeak,linestyle=linestylePeak,label='Peak of smoothed data')
+        ax.plot([minTimeFit,minTimeFit],[0,maxV*1.25],colOffset,linestyle=linestyleOffset,label='Fit start (peak + offset)')
         if n_curves == 1:
-            ax.plot(bin_edges,exponential_decay_1(bin_edges, *popt), colDecay, linestyle=linestyleDecay2)
-            ax.plot(valuesToFit[0],exponential_decay_1(valuesToFit[0], *popt), colDecay, linestyle=linestyleDecay1)
+            ax.plot(bin_edges,exponential_decay_1(bin_edges, *popt), colDecay, linestyle=linestyleDecay2,label='Fit, extended to all times')
+            ax.plot(valuesToFit[0],exponential_decay_1(valuesToFit[0], *popt), colDecay, linestyle=linestyleDecay1,label='Fit (fitted range)')
         elif n_curves == 2:
-            ax.plot(bin_edges,exponential_decay_2(bin_edges, *popt), colDecay, linestyle=linestyleDecay2)
-            ax.plot(valuesToFit[0],exponential_decay_2(valuesToFit[0], *popt), colDecay, linestyle=linestyleDecay1)
+            ax.plot(bin_edges,exponential_decay_2(bin_edges, *popt), colDecay, linestyle=linestyleDecay2,label='Fit, extended to all times')
+            ax.plot(valuesToFit[0],exponential_decay_2(valuesToFit[0], *popt), colDecay, linestyle=linestyleDecay1,label='Fit (fitted range)')
         elif n_curves == 3:
-            ax.plot(bin_edges,exponential_decay_3(bin_edges, *popt), colDecay, linestyle=linestyleDecay2)
-            ax.plot(valuesToFit[0],exponential_decay_3(valuesToFit[0], *popt), colDecay, linestyle=linestyleDecay1)
+            ax.plot(bin_edges,exponential_decay_3(bin_edges, *popt), colDecay, linestyle=linestyleDecay2,label='Fit, extended to all times')
+            ax.plot(valuesToFit[0],exponential_decay_3(valuesToFit[0], *popt), colDecay, linestyle=linestyleDecay1,label='Fit (fitted range)')
         ax.set_yscale('log')
         ax.set_xlabel('Time between pos/neg events (ms)')
         
-        #Plot the difference between expected and data
+        #Plot the difference between the fit and the data
         ax = fig.add_subplot(236)
-        ax.set_title('Expected minus Data')
         
         if n_curves == 1:
             totVals = exponential_decay_1(bin_edges[1:], *popt)
@@ -549,12 +544,23 @@ def PolarityMatching_time(localizations,findingResult,settings,**kwargs):
         elif n_curves == 3:
             totVals = exponential_decay_3(bin_edges[1:], *popt)
             
-        ax.plot(bin_edges[1:],totVals-histV,colHist,linestyle=linestyleHist)
-        ax.plot(bin_edges[1:],totVals-filterhistV,colHistFilt,linestyle=linestyleHistFilt)
-        ax.legend(['Difference','Smoothed difference'])
+        ax.plot(bin_edges[1:],totVals-histV,colHist,linestyle=linestyleHist,label='Fit minus data')
+        ax.plot(bin_edges[1:],totVals-filterhistV,colHistFilt,linestyle=linestyleHistFilt,label='Fit minus smoothed data')
         ax.set_yscale('log')
         ax.set_xlabel('Time between pos/neg events (ms)')
         
+        #Label every panel (in the order they were created: top row, then bottom row)
+        titles = ['Linear scale: fit over the fitted range', 'Linear scale: fit extended to all times', 'Linear scale: fit minus data',
+                  'Log scale: fit over the fitted range', 'Log scale: fit extended to all times', 'Log scale: fit minus data (only values above 0)']
+        ylabels = ['Probability density (1/ms)', 'Probability density (1/ms)', 'Fit minus data (1/ms)']*2
+        for i, (ax, title, ylabel) in enumerate(zip(fig.axes, titles, ylabels)):
+            ax.set_title(title, fontsize='small')
+            ax.set_ylabel(ylabel, fontsize='small')
+            ax.set_xlabel('Time between pos/neg events (ms)', fontsize='small')
+            if i < 3:  #the legend is the same for the log panels below, so it is only drawn once
+                ax.legend(fontsize='x-small')
+        fig.tight_layout(rect=[0, 0, 1, 0.94])
+
         plt.show()
     
     return None
