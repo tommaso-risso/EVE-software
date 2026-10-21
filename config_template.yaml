@@ -16,6 +16,7 @@ input:
   file: eve_test/input/Nanoruler_Small.hdf5   # .hdf5 or .npy
   start_time_ms: 0
   end_time_ms: 1800000        # 30 minutes; omit end_time_ms to use the whole file
+  polarity: both              # both (pos and neg analysed separately), pos, neg, or mix (all events together)
 
 # ----------------------------------------------------------------------------
 # Global settings

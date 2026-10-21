@@ -41,10 +41,13 @@ from matplotlib.backends.backend_pdf import PdfPages
 from eve_run import (
     GLOBAL_SETTINGS_KEYS,
     REPO_ROOT,
+    POLARITIES,
     ConfigError,
     build_global_settings,
+    get_polarity,
     get_metadata,
     load_events,
+    run_finding,
     optional_param_specs,
     required_param_specs,
     resolve_method,
@@ -70,7 +73,7 @@ STAGES = {
 PIPELINE = ["finding", "fitting", "post_processing", "visualisation"]
 LIST_SECTIONS = ("post_processing", "preview")  # sections holding an ordered list of methods
 DEFAULT_PREVIEW = ["TwoDProjections.TwoDProjection", "CumulativeSum.CumulativeSum"]
-INPUT_KEYS = ["file", "start_time_ms", "end_time_ms"]
+INPUT_KEYS = ["file", "start_time_ms", "end_time_ms", "polarity"]
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +117,10 @@ def param_specs(meta, module=None):
     if module is not None:
         for name in int_params(module) & set(specs):
             specs[name]["kind"] = "int"
+    # RCC's ConvHist is "required for Linux, MacOs" (says the plugin) but defaults to False, which
+    # sends those users to a library that only exists for Windows (OSError). Default to True there.
+    if sys.platform != "win32" and "ConvHist" in specs:
+        specs["ConvHist"]["default"] = True
     return specs
 
 
@@ -431,6 +438,51 @@ class _StdoutAboveBar:
 
 
 @contextlib.contextmanager
+def dialogs_in_terminal():
+    """Plugins written for the GUI sometimes pop up a Qt message box (for example 'First run
+    Polarity Matching itself!'). The shell has no Qt application, and Qt aborts the whole
+    process when a widget is created without one. While a stage runs, QMessageBox is replaced
+    by a stand-in that prints the message in the terminal instead."""
+    try:
+        from PyQt5 import QtWidgets
+    except ImportError:
+        yield
+        return
+
+    class TerminalMessageBox:
+        # the values of QMessageBox's own constants
+        NoIcon, Information, Warning, Critical, Question = 0, 1, 2, 3, 4
+        Ok, Yes, No, Cancel = 0x400, 0x4000, 0x10000, 0x400000
+
+        def __init__(self, *args, **kwargs):
+            self.icon, self.title, self.text, self.extra = self.NoIcon, "", "", ""
+
+        def setIcon(self, icon): self.icon = icon
+        def setText(self, text): self.text = text
+        def setWindowTitle(self, title): self.title = title
+        def setInformativeText(self, text): self.extra = text
+        def setStandardButtons(self, buttons): pass
+        def setDefaultButton(self, button): pass
+
+        def exec(self):
+            message = f"{self.title}: {self.text} {self.extra}".strip(": ").strip()
+            if self.icon in (self.Warning, self.Critical):
+                print_error(message)
+            else:
+                print(message)
+            return self.Ok
+
+        exec_ = exec
+
+    original = QtWidgets.QMessageBox
+    QtWidgets.QMessageBox = TerminalMessageBox
+    try:
+        yield
+    finally:
+        QtWidgets.QMessageBox = original
+
+
+@contextlib.contextmanager
 def progress_bar(label):
     """Show a progress bar for the work inside the 'with' block; the routines report
     to it through utilsHelper.report_progress(). While it is on screen, printed text and log
@@ -526,11 +578,13 @@ class EveShell(cmd.Cmd):
         self.intro = self._intro()
         self.events = None
         self.events_file = None
+        self.polarity = "both"           # the polarity the loaded events were selected with
         self.finding_result = None
         self.localizations = None        # output of fitting
-        self.post_localizations = None   # output of the post_processing list
+        self.post_localizations = None   # output of the post_processing steps applied so far
+        self.post_history = []           # the applied steps: {"method", "parameters", "localizations"}
         self.image = None
-        self.last_run = {}               # stage -> {"settings", "summary"} of its last run
+        self.last_run = {}               # stage -> {"settings"} of its last run
         self.session_dir = None
 
     # --- shell plumbing ---------------------------------------------------
@@ -561,29 +615,33 @@ class EveShell(cmd.Cmd):
         except Exception as e:  # e.g. a typo made while editing params.yaml by hand
             return paint(f"(params.yaml can't be read: {e})", "red")
         if self.events is None:
-            steps = [("load", "todo", "-", "")]
+            steps = [("load", "todo", "-")]
         else:
             name = os.path.splitext(os.path.basename(self.events_file))[0]
-            steps = [("load", "done", name, "")]
+            tag = {"mix": "", "pos": " [+]", "neg": " [-]", "both": " [+|-]"}[self.polarity]
+            steps = [("load", "done", name + tag)]
         short = {"post_processing": "post", "visualisation": "vis"}
         for stage in PIPELINE:
             methods = "+".join(method.split(".", 1)[-1] for method, _ in stage_settings(params, stage) if method)
             last = self.last_run.get(stage)
-            if last is None:
-                steps.append((short.get(stage, stage), "todo", methods or "-", ""))
+            if stage == "post_processing" and self.post_history:
+                # the steps stacked so far; stale when the list holds a step that isn't applied as set
+                applied = [(h["method"], h["parameters"]) for h in self.post_history]
+                state = "done" if all(step in applied for step in stage_settings(params, stage)) else "stale"
+                steps.append((short[stage], state, "+".join(m.split(".", 1)[-1] for m, _ in applied)))
+            elif last is None:
+                steps.append((short.get(stage, stage), "todo", methods or "-"))
             else:
                 state = "done" if last["settings"] == stage_settings(params, stage) else "stale"
-                steps.append((short.get(stage, stage), state, methods or "-", last["summary"]))
+                steps.append((short.get(stage, stage), state, methods or "-"))
         next_index = next((i for i, step in enumerate(steps) if step[1] != "done"), None)
         state_colour = {"done": "green", "stale": "yellow", "todo": "grey"}
         parts = []
-        for i, (label, state, methods, summary) in enumerate(steps):
+        for i, (label, state, methods) in enumerate(steps):
             part = paint(label, state_colour[state], *(("bold", "underline") if i == next_index else ()))
             part += paint(" | ", "grey")
             part += paint(methods, "bold", "cyan") if state != "todo" else paint(methods or "-", "grey")
             part += " " + paint(symbol(state), state_colour[state])
-            if summary:
-                part += " " + paint(f"({summary})", "grey")
             parts.append(part)
         return paint(f" {symbol('arrow')} ", "grey").join(parts)
 
@@ -619,6 +677,12 @@ class EveShell(cmd.Cmd):
             print_error(str(e.code).strip())
         except KeyboardInterrupt:
             print("\nInterrupted.")
+        except OSError as e:
+            hint = ""
+            if sys.platform != "win32" and ("libdme" in str(e) or ".dll" in str(e).lower()):
+                hint = ("\n  This method uses a pre-compiled library that only exists for Windows. "
+                        "Here, use DriftCorr_RCC (with ConvHist true) or DriftCorr_AIM instead.")
+            print_error(f"Error: OSError: {e}{hint}")
         except Exception as e:
             print_error(f"Error: {type(e).__name__}: {e}")
 
@@ -737,27 +801,44 @@ class EveShell(cmd.Cmd):
     # --- load ---------------------------------------------------------------
 
     def do_load(self, arg):
-        """load [file]: load event data (.hdf5 or .npy) into memory.
+        """load [file] [both|pos|neg|mix]: load event data (.hdf5 or .npy) into memory.
 
         With a file, it also becomes input.file in params.yaml. Without one,
         the file already in params.yaml is (re)loaded. The time range comes from
         input.start_time_ms / input.end_time_ms (change with 'set input.end_time_ms ...').
+
+        The polarity says which events are analysed (it is saved as input.polarity):
+          both   positive and negative separately (the default), as the GUI's 'Pos and neg
+                 separately': finding runs on each polarity with the same parameters and the
+                 candidates are merged, so post-processing like PolarityMatching sees both.
+          pos    positive events only
+          neg    negative events only
+          mix    all events together
         Loading new data clears all results computed from the old data.
         """
         params = read_params()
         params.setdefault("input", {})
-        if arg.strip():
-            params["input"]["file"] = arg.strip()
+        words = arg.split()
+        if words and words[-1].lower() in POLARITIES:
+            params["input"]["polarity"] = words.pop().lower()
+            write_params(params)
+        if words:
+            params["input"]["file"] = " ".join(words)
             write_params(params)
         file_path = params["input"].get("file")
         if not file_path or not os.path.exists(file_path):
             raise ConfigError(f"Data file '{file_path}' not found.")
+        polarity = get_polarity(params["input"])
         t0 = time.time()
         self.events = load_events(params["input"])
         self.events_file = file_path
+        self.polarity = polarity
         self.finding_result = self.localizations = self.post_localizations = self.image = None
+        self.post_history = []
         self.last_run = {}
-        print(f"Loaded {len(self.events)} events from '{file_path}' ({time.time() - t0:.1f}s).")
+        what = {"mix": "", "pos": " (positive events only)", "neg": " (negative events only)",
+                "both": " (positive and negative analysed separately)"}[polarity]
+        print(f"Loaded {len(self.events)} events from '{file_path}'{what} ({time.time() - t0:.1f}s).")
 
     # --- use / set / reset / params ----------------------------------------
 
@@ -816,7 +897,10 @@ class EveShell(cmd.Cmd):
             paths[f"global_settings.{key}"] = {"default": (params.get("global_settings") or {}).get(key)}
         for key in INPUT_KEYS:
             default = (params.get("input") or {}).get(key, 0)
-            paths[f"input.{key}"] = {"default": "" if key == "file" else default}
+            if key == "polarity":
+                paths[f"input.{key}"] = {"default": "both", "choices": list(POLARITIES)}
+            else:
+                paths[f"input.{key}"] = {"default": "" if key == "file" else default}
         for stage in STAGES:
             for section, label in stage_methods(params, stage):
                 if not section.get("method"):
@@ -863,6 +947,8 @@ class EveShell(cmd.Cmd):
         target[keys[-1]] = value
         write_params(params)
         print(f"{path} = {value}")
+        if keys[0] == "input" and self.events is not None:
+            print("  (takes effect when the data is loaded again: 'load')")
 
     def complete_set(self, text, line, begidx, endidx):
         if len(line.split()) > 2 or (len(line.split()) == 2 and not text):
@@ -982,7 +1068,8 @@ class EveShell(cmd.Cmd):
         if "-y" not in words[1:] and not self._review(stage):
             print("Cancelled; nothing was run. Choices made in the review are kept in params.yaml.")
             return
-        self._run_stage(stage)
+        with dialogs_in_terminal():
+            self._run_stage(stage)
 
     def complete_run(self, text, line, begidx, endidx):
         return self._complete_from(PIPELINE, text)
@@ -1103,11 +1190,15 @@ class EveShell(cmd.Cmd):
             func, kwargs = resolve_method(params["finding"], STAGES[stage], "finding")
             t0 = time.time()
             with progress_bar("finding"):
-                result, _ = func(self.events, global_settings, **kwargs)
+                result, _ = run_finding(func, self.events, self.polarity, global_settings, kwargs)
             self.finding_result = result
             self.localizations = self.post_localizations = self.image = None
-            summary = f"{len(result)} cand"
-            print(f"Finding: {len(result)} candidates from {len(self.events)} events ({time.time() - t0:.1f}s).")
+            self.post_history = []
+            split = ""
+            if self.polarity == "both":
+                n_pos = sum(1 for c in result.values() if (c["events"]["p"] == 1).all())
+                split = f" ({n_pos} positive, {len(result) - n_pos} negative)"
+            print(f"Finding: {len(result)} candidates{split} from {len(self.events)} events ({time.time() - t0:.1f}s).")
 
         elif stage == "fitting":
             func, kwargs = resolve_method(params["fitting"], STAGES[stage], "fitting")
@@ -1116,30 +1207,46 @@ class EveShell(cmd.Cmd):
                 result, _ = func(self.finding_result, global_settings, **kwargs)
             self.localizations = result
             self.post_localizations = self.image = None
-            summary = f"{n_valid(result)} locs"
+            self.post_history = []
             print(f"Fitting: {n_valid(result)} localizations from {len(self.finding_result)} candidates "
                   f"({time.time() - t0:.1f}s).")
 
         elif stage == "post_processing":
-            steps = [(resolve_method(section, STAGES[stage], label), section["method"])
+            steps = [(resolve_method(section, STAGES[stage], label), section["method"], section.get("parameters") or {})
                      for section, label in stage_methods(params, stage)]
             if not steps:
                 raise ConfigError("No post_processing steps. Add some with 'use post_processing <method> ...'.")
-            localizations = self.localizations
+            # The steps stack on what earlier runs applied. A step whose method was applied
+            # before goes back to just before that step (dropping it and everything after it)
+            # and is applied again; any other step goes on top. earlier = how many history
+            # entries come from earlier runs: the ones this run adds can't be rewound to.
+            earlier = len(self.post_history)
             step_lines = []  # printed once the bar is finished, so they don't mix with it
-            with progress_bar("post_processing") as bar:
-                for i, ((func, kwargs), dotted_name) in enumerate(steps):
-                    bar.update(i / len(steps))  # percentage = finished steps
-                    t0 = time.time()
-                    localizations, _ = func(localizations, self.finding_result, global_settings, **kwargs)
-                    bar.update((i + 1) / len(steps))
-                    step_lines.append(f"Post-processing {dotted_name}: {n_valid(localizations)} localizations "
-                                      f"({time.time() - t0:.1f}s).")
-            for line in step_lines:
-                print(line)
-            self.post_localizations = localizations
-            self.image = None
-            summary = f"{n_valid(localizations)} locs"
+            try:
+                with progress_bar("post_processing") as bar:
+                    for i, ((func, kwargs), dotted_name, parameters) in enumerate(steps):
+                        bar.update(i / len(steps))  # percentage = finished steps
+                        again = next((k for k in range(earlier) if self.post_history[k]["method"] == dotted_name), None)
+                        if again is not None:
+                            del self.post_history[again:]
+                            earlier = again
+                        localizations = self.post_history[-1]["localizations"] if self.post_history else self.localizations
+                        t0 = time.time()
+                        result = func(localizations, self.finding_result, global_settings, **kwargs)
+                        if result is not None:  # steps that only draw a plot (Histogramming, NeNA, ...) return None
+                            localizations = result[0]
+                        self.post_history.append({"method": dotted_name, "parameters": parameters,
+                                                  "localizations": localizations})
+                        bar.update((i + 1) / len(steps))
+                        redone = " (applied again, going back to before it)" if again is not None else ""
+                        step_lines.append(f"Post-processing {dotted_name}: {n_valid(localizations)} localizations "
+                                          f"({time.time() - t0:.1f}s){redone}.")
+                for line in step_lines:
+                    print(line)
+            finally:  # steps applied before an error stay applied
+                self.post_localizations = self.post_history[-1]["localizations"] if self.post_history else None
+                self.image = None
+                self.last_run.pop("visualisation", None)
 
         else:  # visualisation
             localizations = self.post_localizations if self.post_localizations is not None else self.localizations
@@ -1149,7 +1256,6 @@ class EveShell(cmd.Cmd):
             with progress_bar("visualisation"):
                 image, scale = func(localizations, global_settings, **kwargs)
             self.image = image
-            summary = f"of {'post' if source == 'post-processed' else 'fitting'}"
             print(f"Visualisation of {n_valid(localizations)} {source} localizations: "
                   f"image {getattr(image, 'shape', '?')}, scale {scale} ({time.time() - t0:.1f}s).")
             fig, ax = plt.subplots()
@@ -1161,7 +1267,7 @@ class EveShell(cmd.Cmd):
         # prompt); the later stages' results were just cleared.
         for later in PIPELINE[PIPELINE.index(stage) + 1:]:
             self.last_run.pop(later, None)
-        self.last_run[stage] = {"settings": stage_settings(params, stage), "summary": summary}
+        self.last_run[stage] = {"settings": stage_settings(params, stage)}
         self._show_figures()
 
     def _show_figures(self):
@@ -1213,7 +1319,10 @@ class EveShell(cmd.Cmd):
         else:
             fit_status = ", ".join(f"x={row.x:.1f} nm y={row.y:.1f} nm t={row.t:.1f} ms"
                                    for row in fit.itertuples())
-        print(f"Candidate {candidate_id}: {candidate['N_events']} events, "
+        polarities = set(candidate["events"]["p"])
+        polarity = ("positive" if polarities == {1} else "negative" if polarities == {0}
+                    else "mixed polarity")
+        print(f"Candidate {candidate_id} ({polarity}): {candidate['N_events']} events, "
               f"cluster size {list(candidate['cluster_size'])}, {fit_status}.")
 
         figures = []

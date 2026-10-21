@@ -13,6 +13,7 @@ See config_template.yaml for a commented starting point.
 import argparse
 import csv
 import datetime
+import logging
 import os
 import pickle
 import subprocess
@@ -36,7 +37,7 @@ from CandidateFitting import *
 from PostProcessing import *
 from Visualisation import *
 from CandidatePreview import *  # not used by this script; lets eve_cli.py resolve preview methods via get_metadata
-from Utils import utils
+from Utils import utils, utilsHelper
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 
@@ -219,11 +220,25 @@ def resolve_method(section_config, folder, context):
     return func, kwargs
 
 
+POLARITIES = ("mix", "pos", "neg", "both")  # as in the GUI's polarity dropdown
+POLARITY_VALUE = {"pos": 1, "neg": 0}       # the value of the events' 'p' field
+
+
+def get_polarity(input_config):
+    polarity = str((input_config or {}).get("polarity", "both")).lower()
+    if polarity not in POLARITIES:
+        raise ConfigError(f"input.polarity must be one of {', '.join(POLARITIES)}, not '{polarity}'.")
+    return polarity
+
+
 def load_events(input_config):
+    """Load the events. 'pos' / 'neg' keep only that polarity; 'mix' and 'both' keep
+    all of them ('both' is split later, so finding runs on each polarity on its own)."""
     require_keys(input_config or {}, ["file"], "'input'")
     file_path = input_config["file"]
     start_ms = input_config.get("start_time_ms", 0)
     end_ms = input_config.get("end_time_ms", float("inf"))
+    polarity = get_polarity(input_config)
     ext = os.path.splitext(file_path)[1].lower()
     if ext in (".hdf5", ".h5"):
         events = utils.timeSliceFromHDF(
@@ -233,7 +248,35 @@ def load_events(input_config):
         events = np.load(file_path)
     else:
         raise ConfigError(f"Unsupported input file type '{ext}' for '{file_path}'. Use .hdf5 or .npy.")
+    if polarity in POLARITY_VALUE:
+        events = events[events["p"] == POLARITY_VALUE[polarity]]
     return events
+
+
+def run_finding(func, events, polarity, global_settings, kwargs):
+    """Call a finding routine. With polarity 'both' it runs on the positive and on the
+    negative events separately (same parameters), as the GUI's 'Pos and neg separately'
+    does, and merges the candidates: the negative ones are numbered after the positive ones.
+    Returns (candidates, info) like the routine itself."""
+    if polarity != "both":
+        return func(events, global_settings, **kwargs)
+    outer = utilsHelper.get_progress_listener()
+    merged, infos = {}, {}
+    for i, name in enumerate(("pos", "neg")):
+        part = events[events["p"] == POLARITY_VALUE[name]]
+        if len(part) == 0:
+            logging.warning(f"No {'positive' if name == 'pos' else 'negative'} events to run finding on.")
+            continue
+        if outer is not None:  # each polarity fills half of the progress bar
+            utilsHelper.set_progress_listener(lambda fraction, i=i: outer((i + fraction) / 2))
+        try:
+            candidates, infos[name] = func(part, global_settings, **kwargs)
+        finally:
+            utilsHelper.set_progress_listener(outer)
+        offset = len(merged)
+        for key, candidate in candidates.items():
+            merged[key + offset] = candidate
+    return merged, infos
 
 
 # ---------------------------------------------------------------------------
@@ -345,7 +388,8 @@ def run(config_path):
 
     # --- Finding ---
     t0 = time.time()
-    finding_result, finding_info = finding_func(events, global_settings, **finding_kwargs)
+    finding_result, finding_info = run_finding(
+        finding_func, events, get_polarity(config.get("input", {})), global_settings, finding_kwargs)
     run_metadata["stages"]["finding"] = {
         "method": finding_config["method"],
         "parameters": finding_config.get("parameters", {}),
@@ -382,7 +426,11 @@ def run(config_path):
 
         existing_fignums = set(plt.get_fignums())
         t0 = time.time()
-        localizations, step_info = func(localizations, finding_result, global_settings, **kwargs)
+        result = func(localizations, finding_result, global_settings, **kwargs)
+        if result is None:  # steps that only draw a plot (Histogramming, NeNA, ...) return None: no change, as in the GUI
+            step_info = "returned nothing: the localizations are unchanged"
+        else:
+            localizations, step_info = result
         duration = round(time.time() - t0, 2)
         save_new_figures_as_pdf(existing_fignums, step_dir)
         save_localizations_thunderstorm(os.path.join(step_dir, "localizations.csv"), localizations)

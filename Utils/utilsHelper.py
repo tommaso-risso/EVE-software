@@ -17,6 +17,9 @@ def set_progress_listener(listener):
     global _progress_listener
     _progress_listener = listener
 
+def get_progress_listener():
+    return _progress_listener
+
 def report_progress(fraction):
     if _progress_listener is not None:
         _progress_listener(fraction)
