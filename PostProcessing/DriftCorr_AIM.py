@@ -88,8 +88,8 @@ def DriftCorr_AIM(resultArray,findingResult,settings,**kwargs):
     shift_y = np.mean(drift_y)
     drift_x -= shift_x
     drift_y -= shift_y
-    x_pdc += shift_x
-    y_pdc += shift_y
+    x_pdc += shift_x/pxSize  # x_pdc is in pixels, the drift in nm
+    y_pdc += shift_y/pxSize
     
     import copy
     #Correct the resultarray for the drift
